@@ -15,8 +15,8 @@ HEADERS = {"User-Agent": SEC_USER_AGENT}
 # Some companies use different XBRL tag names for the same concept
 METRICS = {
     "Revenue": [
-        "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
         "SalesRevenueNet"
     ],
     "NetIncome": [
@@ -27,10 +27,12 @@ METRICS = {
         "OperatingIncomeLoss"
     ],
     "EPS_Basic": [
-        "EarningsPerShareBasic"
+        "EarningsPerShareBasic",
+        "IncomeLossFromContinuingOperationsPerBasicShare"
     ],
     "EPS_Diluted": [
-        "EarningsPerShareDiluted"
+        "EarningsPerShareDiluted",
+        "IncomeLossFromContinuingOperationsPerDilutedShare"
     ],
     "TotalAssets": [
         "Assets"
@@ -80,17 +82,24 @@ def extract_annual_values(facts: dict, tags: list) -> list:
     for tag in tags:
         if tag in gaap:
             units = gaap[tag].get("units", {})
-            values = units.get("USD", units.get("shares", []))
-            # Filter for annual 10-K filings only, remove duplicates
-            annual = [
-                v for v in values
-                if v.get("form") == "10-K" and v.get("frame") is not None
-            ]
+            # Check USD first, then pure numbers (for EPS/shares)
+            values = (
+                units.get("USD") or
+                units.get("USD/shares") or
+                units.get("shares") or
+                []
+            )
+            # Get all 10-K entries, sorted by most recent
+            annual = [v for v in values if v.get("form") == "10-K" and len(v.get("end","")) == 10]
             if not annual:
-                # fallback — get 10-K without frame filter
-                annual = [v for v in values if v.get("form") == "10-K"]
-            if annual:
-                return sorted(annual, key=lambda x: x["end"], reverse=True)
+                continue
+            # Deduplicate by period end — keep latest filing per year
+            seen = {}
+            for v in sorted(annual, key=lambda x: x.get("filed",""), reverse=True):
+                year = v["end"][:4]
+                if year not in seen:
+                    seen[year] = v
+            return sorted(seen.values(), key=lambda x: x["end"], reverse=True)
     return []
 
 
@@ -102,7 +111,7 @@ def format_number(value: float, metric_name: str) -> str:
         return f"${value/1_000_000_000:.2f}B"
     if abs(value) >= 1_000_000:
         return f"${value/1_000_000:.2f}M"
-    return f"${value:,.0f}"
+    return f"${value:,.2f}"
 
 
 def extract_financials(ticker: str, years: int = 5) -> dict:
