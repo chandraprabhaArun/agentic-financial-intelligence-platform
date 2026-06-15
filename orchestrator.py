@@ -1,5 +1,6 @@
 import sys
 import os
+from agents.rag_agent import run as rag_run
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from typing import TypedDict, Optional
@@ -19,6 +20,7 @@ class FinancialState(TypedDict):
     financials:   Optional[dict]
     valuation:    Optional[dict]
     news:         Optional[dict]
+    rag:          Optional[dict]
     errors:       Optional[list]
     status:       Optional[str]
 
@@ -69,6 +71,15 @@ def news_node(state: FinancialState) -> FinancialState:
         return {**state, "errors": errors + [f"NewsAgent: {e}"],
                 "status": "news_failed"}
 
+def rag_node(state: FinancialState) -> FinancialState:
+    print("\n🔵 [Node 4/5] RAG Agent running...")
+    try:
+        rag_results = rag_run(state["ticker"])
+        return {**state, "rag": rag_results, "status": "rag_complete"}
+    except Exception as e:
+        errors = state.get("errors") or []
+        return {**state, "errors": errors + [f"RAGAgent: {e}"],
+                "status": "rag_failed"}
 
 def summary_node(state: FinancialState) -> FinancialState:
     """Final node — prints the complete investment summary."""
@@ -110,6 +121,14 @@ def summary_node(state: FinancialState) -> FinancialState:
         print(f"     Breakdown:       🟢{s['breakdown']['bullish']} bullish  "
               f"🟡{s['breakdown']['neutral']} neutral  "
               f"🔴{s['breakdown']['bearish']} bearish")
+    # RAG insights
+    if state.get("rag"):
+        answers = state["rag"].get("questions", {})
+        print(f"\n  📄 RAG INSIGHTS FROM 10-K FILINGS")
+        for i, (q, a) in enumerate(list(answers.items())[:2], 1):
+            short_q = q.replace(f"{state['ticker']} ", "").replace("What was ", "").replace("What are ", "")
+            print(f"  {i}. {short_q[:50]}...")
+            print(f"     {a[:150]}...")    
 
     # Errors if any
     if state.get("errors"):
@@ -138,20 +157,16 @@ def should_run_valuation(state: FinancialState) -> str:
 def build_graph() -> StateGraph:
     graph = StateGraph(FinancialState)
 
-    # Add all nodes — using _agent suffix to avoid clash with state keys
     graph.add_node("filing_agent",     filing_node)
     graph.add_node("extraction_agent", extraction_node)
     graph.add_node("valuation_agent",  valuation_node)
     graph.add_node("news_agent",       news_node)
+    graph.add_node("rag_agent",        rag_node)
     graph.add_node("summary_agent",    summary_node)
 
-    # Entry point
     graph.set_entry_point("filing_agent")
-
-    # Linear edges
     graph.add_edge("filing_agent", "extraction_agent")
 
-    # Conditional edge — run valuation only if extraction succeeded
     graph.add_conditional_edges(
         "extraction_agent",
         should_run_valuation,
@@ -162,7 +177,8 @@ def build_graph() -> StateGraph:
     )
 
     graph.add_edge("valuation_agent", "news_agent")
-    graph.add_edge("news_agent",      "summary_agent")
+    graph.add_edge("news_agent",      "rag_agent")
+    graph.add_edge("rag_agent",       "summary_agent")
     graph.add_edge("summary_agent",   END)
 
     return graph.compile()
@@ -183,6 +199,7 @@ def run_pipeline(ticker: str = "AAPL") -> dict:
         "financials": None,
         "valuation":  None,
         "news":       None,
+        "rag":        None,
         "errors":     [],
         "status":     "starting"
     }
